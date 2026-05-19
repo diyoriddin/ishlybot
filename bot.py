@@ -7,20 +7,13 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.client.telegram import TelegramAPIServer
-from aiogram.client.session.aiohttp import AiohttpSession
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
-# TelegramAPIServer.from_base ishlatamiz. 
-# Hugging Face blokidan o'tish uchun xalqaro tekin muqobil xavfsiz proxy manzili:
-CUSTOM_API_SERVER = TelegramAPIServer.from_base("https://teleapi.tech/bot")
-
-session = AiohttpSession(api=CUSTOM_API_SERVER)
-bot = Bot(token=BOT_TOKEN, session=session)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 class BotStates(StatesGroup):
@@ -40,7 +33,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     
     await message.answer(
         f"Salom {message.from_user.full_name}!\n"
-        f"**Ishly** platformasiga xush kelibsiz. Tizimimiz hozirda Hugging Face bulutida asinxron rejimda ishlamoqda.\n\n"
+        f"**Ishly** platformasiga xush kelibsiz.\n\n"
         f"Davom etish uchun quyidagi tugmalardan birini tanlang:",
         reply_markup=keyboard,
         parse_mode="Markdown"
@@ -64,16 +57,9 @@ async def process_role(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 async def main():
-    logging.info("Ishly bot xavfsiz tarmoq liniyasi orqali ulanmoqda...")
-    
-    while True:
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-            logging.info("Aylama yo'l muvaffaqiyatli o'rnatildi! Telegram bot kutish rejimida...")
-            await dp.start_polling(bot)
-        except Exception as e:
-            logging.error(f"Ulanishda xato: {e}. 5 soniyadan keyin qayta ulanadi...")
-            await asyncio.sleep(5)
+    logging.info("Ishly bot Render bulutida ishga tushmoqda...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
