@@ -9,24 +9,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 
-# 1. Yashirin .env fayldan tokenlarni yuklaymiz
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Xatoliklarni terminalda ko'rish uchun logging
 logging.basicConfig(level=logging.INFO)
 
-# Hugging Face tarmoq muammolarini aylanib o'tish uchun tekin xalqaro proxy session
-# Bu orqali Telegram blokirovkalari aylanib o'tiladi
-session = AiohttpSession(proxy="http://proxy.server:3128") # Standart ochiq proxy porti yoki to'g'ridan-to'g'ri integratsiya
-
-try:
-    # Agarda maxsus serverda proxy kerak bo'lsa session bilan, bo'lmasa oddiy ulaymiz
-    # Hugging Face tarmog'i barqarorligi uchun xavfsiz rejim:
-    bot = Bot(token=BOT_TOKEN)
-except Exception as e:
-    logging.error(f"Botni yuklashda xato: {e}")
-
+# Hugging Face tarmog'i uchun xavfsiz session yaratamiz
+session = AiohttpSession()
+bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 
 class BotStates(StatesGroup):
@@ -70,10 +60,17 @@ async def process_role(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 async def main():
-    logging.info("Ishly bot ulanishni qayta sinab ko'rmoqda...")
-    # Tarmoq uzilishlarini oldini olish uchun eski sessiyalarni tozalaymiz
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    logging.info("Ishly bot ulanishni tekshirmoqda...")
+    
+    # Tarmoq uzilishlari va eski xabarlar tiqilib qolishini oldini olish
+    while True:
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logging.info("Telegram bilan aloqa o'rnatildi! Start polling boshlanmoqda...")
+            await dp.start_polling(bot)
+        except Exception as e:
+            logging.error(f"Tarmoqda uzilish bo'ldi: {e}. 5 soniyadan keyin qayta ulanadi...")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
