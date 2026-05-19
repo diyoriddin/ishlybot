@@ -15,9 +15,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
-# Hugging Face blokirovkalarini aylanib o'tish uchun maxsus tekin Reverse Proxy server ulaymiz
-# Bu xalqaro miqyosda Telegram API so'rovlarini xavfsiz yetkazib beradi
-CUSTOM_API_SERVER = TelegramAPIServer.from_base_url("https://api.telegram.org") # Agar bu ham o'tmasa muqobil: "https://teleapi.tech/bot"
+# TelegramAPIServer.from_base ishlatamiz. 
+# Hugging Face blokidan o'tish uchun xalqaro tekin muqobil xavfsiz proxy manzili:
+CUSTOM_API_SERVER = TelegramAPIServer.from_base("https://teleapi.tech/bot")
 
 session = AiohttpSession(api=CUSTOM_API_SERVER)
 bot = Bot(token=BOT_TOKEN, session=session)
