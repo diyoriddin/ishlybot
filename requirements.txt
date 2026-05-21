@@ -2,4 +2,4 @@ aiogram==3.10.0
 fastapi
 uvicorn
 motor
-google-generativeai
+httpx
