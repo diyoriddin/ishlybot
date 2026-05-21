@@ -3,53 +3,59 @@ import logging
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
 # Logging sozlamalari
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# Vercel har safar har xil link berganda adashib ketmasligi uchun
-# request kelgan paytda domenni avtomatik aniqlaydigan qilamiz!
+# Vercel har xil havolalar berganda adashmaslik uchun asosiy ishlab turgan domeningiz:
+WEBHOOK_HOST = "ishlybot-bi6r.vercel.app"
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
 
-# Asosiy sahifa (Vercel ishlab turganini tekshirish uchun)
+# 1. Loyiha Vercel serverida ilk bor uyg'onganda Webhook-ni Telegram-ga avtomatik o'rnatish
+@app.on_event("startup")
+async def on_startup():
+    logging.info(f"Webhook o'rnatilmoqda: {WEBHOOK_URL}")
+    await bot.set_webhook(
+        url=WEBHOOK_URL,
+        drop_pending_updates=True
+    )
+
+# 2. Asosiy sahifa (Brauzerda tekshirish uchun)
 @app.get("/")
 async def root():
     return {"status": "Ishly Bot is working via Webhook!"}
 
-# Telegram-dan keladigan xabarlarni qabul qiluvchi API nuqtasi
+# 3. Telegram-dan keladigan so'rovlarni aiogram dispatcher-iga uzatish (Eng muhim joyi!)
 @app.post(WEBHOOK_PATH)
 async def bot_webhook(request: Request):
-    # Xabar kelgan paytda Vercel-ning joriy linkini avtomatik aniqlaymiz
-    host = request.headers.get("host")
-    if host:
-        current_webhook_url = f"https://{host}{WEBHOOK_PATH}"
-        try:
-            webhook_info = await bot.get_webhook_info()
-            if webhook_info.url != current_webhook_url:
-                logging.info(f"Webhook yangilanmoqda: {current_webhook_url}")
-                await bot.set_webhook(url=current_webhook_url, drop_pending_updates=True)
-        except Exception as e:
-            logging.error(f"Webhook o'rnatishda xatolik: {e}")
-
-    # Kelgan xabarni aiogram handlerlariga yetkazish
     try:
         update_data = await request.json()
         update = types.Update.model_validate(update_data)
+        # Kelgan xabarni aiogram kutubxonasining o'ziga feed qilamiz (topshiramiz)
         await dp.feed_update(bot, update)
     except Exception as e:
         logging.error(f"Xabarni qayta ishlashda xatolik: {e}")
-        
     return {"status": "ok"}
 
-# --- BOT HANDLERLARI (Sening boting mantiqiy qismi) ---
+
+# --- BOT HANDLERLARI (Mantiq qismi) ---
 
 @dp.message(lambda message: message.text == "/start")
 async def send_welcome(message: types.Message):
-    # Bu yerga o'zingning eski start handleringni va tugmalaringni joylashtirishing mumkin
-    await message.reply("Salom! Ishly platformasiga xush kelibsiz!")
+    # Oldingi kodingizdagi chiroyli tugmalarni va matnlarni aynan mana shu erga qaytarasiz!
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="💼 Ish qidiryapman")
+    builder.button(text="📢 Ish beruvchiman")
+    builder.adjust(2)
+    
+    await message.answer(
+        "Salom! Ishly platformasiga xush kelibsiz! Uzingizga mos bo'limni tanlang:",
+        reply_markup=builder.as_markup(resize_keyboard=True)
+    )
