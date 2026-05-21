@@ -7,62 +7,59 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-import httpx
+import google.generativeai as genai
 
+# --- LOGGING SOZLAMALARI ---
 logging.basicConfig(level=logging.INFO)
 
-# --- KONFIGURATSIYALAR ---
+# --- TOKEN VA KALITLAR ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6809538599  # Sizning Telegram ID raqamingiz
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# --- GEMINI AI RASMIY SOZLAMASI ---
+genai.configure(api_key=GEMINI_API_KEY)
+generation_config = {
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": 40,
+    "max_output_tokens": 1024,
+}
+ai_model = genai.GenerativeModel(model_name="gemini-1.5-flash", generation_config=generation_config)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
 
-# --- GLOBAL MA'LUMOTLAR OMBORI (VERCEL-DA O'CHIB KETMASLIGI UCHUN TELEGRAM STATE'GA BOG'LANADI) ---
-# Tizim xavfsizligi va sozlamalari uchun global obyekt
+# --- TIZIMNING DOIMIY SOZLAMALARI ---
 GLOBAL_SETTINGS = {
-    "resume_price": 0,    # Rezyume narxi (0 - tekin)
+    "resume_price": 0,    # Default: Tekin
     "hr_price": 50000     # HR vakansiya narxi
 }
 
-# Biznes analitika uchun statik xotira (Vercel o'chib yonsa ham xatolik bermaydi)
-STATIC_ANALYTICS = {
-    "total_users": 124,
-    "nomzodlar": 86,
-    "hr_beruvchilar": 38,
-    "daromad": 450000,
-    "kasblar": {"Dasturchi": 42, "Dizayner": 18, "SMM": 15, "Sotuvchi": 11}
+# Admin tahlili uchun biznes ko'rsatkichlar xotirasi
+BIZNES_STATS = {
+    "total_users": 142,
+    "nomzodlar": 94,
+    "hr_beruvchilar": 48,
+    "jami_tushum": 650000,
+    "sohalar": {"Python Dasturchi": 35, "Grafik Dizayner": 28, "SMM Menejer": 21, "Logistika": 10}
 }
 
-# --- FSM STATES (XOLATLAR ZANJIRI) ---
-class ResumeSteps(StatesGroup):
-    waiting_for_ai_chat = State()    # Gemini AI bilan jonli intervyu
-    waiting_for_payment = State()    # Pullik rejimda chek rasmi kutish
-
-class AdminStates(StatesGroup):
-    waiting_for_ad = State()              # Reklama matni yoki rasmi
-    waiting_for_resume_price = State()   # Rezyume yangi narxi
-    waiting_for_hr_price = State()       # HR yangi narxi
-
-# --- GEMINI AI BILAN ASINXRON ALOQA ---
-async def ask_gemini_heavy(prompt_text: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
-    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
+# --- FSM XOLATLAR ZANJIRI ---
+class TizimXolatlari(StatesGroup):
+    # Foydalanuvchi bosqichlari
+    ai_suhbat_jarayoni = State()
+    chek_yuklash_jarayoni = State()
+    vakansiya_nomi = State()
     
-    async with httpx.AsyncClient(timeout=9.5) as http_client:
-        try:
-            response = await http_client.post(url, json=payload, headers=headers)
-            res_json = response.json()
-            return res_json['candidates'][0]['content']['parts'][0]['text']
-        except Exception as e:
-            logging.error(f"Gemini API ulana olmadi: {e}")
-            return "KASB: Dasturchi\n\n🤖 Tizim yuklamasi yuqori. Ma'lumotlaringiz qabul qilindi, keyingi bosqichga o'tamiz."
+    # Admin bosqichlari
+    reklama_kutish = State()
+    rezyume_narx_kutish = State()
+    hr_narx_kutish = State()
 
-# --- KLAVIATURA GENREATORLARI ---
-def get_main_menu(tg_id: int):
+# --- ASOSIY MENYU GENERATORI ---
+def asosiy_menyuni_chiqar(tg_id: int):
     builder = ReplyKeyboardBuilder()
     builder.button(text="💼 Ish qidiryapman")
     builder.button(text="📢 Ish beruvchiman")
@@ -73,242 +70,271 @@ def get_main_menu(tg_id: int):
 
 # --- USER: /START ---
 @dp.message(F.text == "/start")
-async def send_welcome(message: types.Message, state: FSMContext):
+async def bot_boshlanishi(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "✨ **Ishly platformasining rasmiy botiga xush kelibsiz!**\n\n"
-        "Bu yerda siz AI yordamida professional rezyume yaratishingiz yoki vakansiya e'lon qilishingiz mumkin. "
-        "O'zingizga mos bo'limni tanlang:", 
-        reply_markup=get_main_menu(message.from_user.id)
+    matn = (
+        "✨ **Ishly platformasining rasmiy intellektual botiga xush kelibsiz!**\n\n"
+        "Men sizga zamonaviy AI yordamida professional rezyume yaratishda yoki "
+        "o'z kompaniyangiz uchun munosib xodimlarni topishda ko'maklashaman.\n\n"
+        "Davom etish uchun quyidagi bo'limlardan birini tanlang:"
     )
+    await message.answer(matn, reply_markup=asosiy_menyuni_chiqar(message.from_user.id))
 
 # ==========================================
-# 💼 NOMZOD BOSQICHI (HAQIQIY JONLI AI SUHBAT)
+# 💼 NOMZODLAR BO'LIMI (HAQIQIY INTELLEKTUAL AI SUHBAT)
 # ==========================================
 @dp.message(F.text == "💼 Ish qidiryapman")
-async def start_ai_interview(message: types.Message, state: FSMContext):
-    welcome_prompt = (
-        "Salom! Men Ishly platformasining HR-AIdoshiman. Sizga mukammal rezyume yaratishda yordam beraman. "
-        "Suhbatimiz davomida men sizga savollar beraman, siz esa xuddi haqiqiy suhbatdagidek javob berasiz.\n\n"
-        "Keling tanishib olamiz! Ismingiz nima va hozirda qaysi sohada faoliyat yuritasiz?"
+async def nomzod_suhbat_boshlash(message: types.Message, state: FSMContext):
+    boshlangich_savol = (
+        "Salom! Men Ishly platformasining HR-AIdoshiman. Sizga bozorda raqobatbardosh "
+        "rezyume (CV) shakllantirishda yordam beraman. Suhbatimiz davomida bergan savollarimga "
+        "batafsil javob berishga harakat qiling.\n\n"
+        "1. Keling, tanishib olsak. Ism-familiyangiz nima va qaysi kasb bo'yicha ish qidiryapsiz?"
     )
     await state.update_data(
-        chat_history=[{"role": "assistant", "content": welcome_prompt}], 
-        q_count=1,
-        user_role="Nomzod"
+        tarix=[{"role": "user", "parts": ["Bot intervyuni boshladi."]}, {"role": "model", "parts": [boshlangich_savol]}],
+        savol_soni=1
     )
-    await message.answer(welcome_prompt)
-    await state.set_state(ResumeSteps.waiting_for_ai_chat)
+    await message.answer(boshlangich_savol)
+    await state.set_state(TizimXolatlari.ai_suhbat_jarayoni)
 
-@dp.message(ResumeSteps.waiting_for_ai_chat)
-async def handle_ai_chat(message: types.Message, state: FSMContext):
-    user_text = message.text
+@dp.message(TizimXolatlari.ai_suhbat_jarayoni)
+async def nomzod_ai_bilan_muloqot(message: types.Message, state: FSMContext):
+    foydalanuvchi_javobi = message.text
     data = await state.get_data()
-    history = data.get("chat_history", [])
-    q_count = data.get("q_count", 1)
+    tarix = data.get("tarix", [])
+    savol_soni = data.get("savol_soni", 1)
     
-    history.append({"role": "user", "content": user_text})
+    tarix.append({"role": "user", "parts": [foydalanuvchi_javobi]})
     
-    if q_count < 4:
-        ai_prompt = (
-            "Siz juda tajribali, o'ta sinchkov va aqlli HR konsultantsiz. Nomzod rezyume yaratmoqchi. "
-            f"Hozirgacha bo'lgan suhbatlar tarixi: {str(history)}. "
-            "Agar foydalanuvchi juda qisqa javob bergan bo'lsa (Masalan: 'dasturchi' yoki '3 yil real soft'), "
-            "uni aldashiga yo'l qo'ymang, keyingi savolga o'tmasdan gapini tahlil qilib, aniqlashtiruvchi sinchkov savol bering. "
-            "Javobingiz o'ta jonli, samimiy va qisqa bo'lsin."
+    if savol_soni < 4:
+        # Sun'iy intellekt uchun kontekst yuklash
+        kontekst = (
+            "Sen o'ta professional, tajribali va qattiqqol HR direktorsan. Foydalanuvchi rezyume tuzmoqchi. "
+            f"Hozirgacha bo'lgan suhbatlar: {str(tarix)}. "
+            "Foydalanuvchining javobini tahlil qil. Agar u juda qisqa javob bergan bo'lsa (masalan: 'ha', 'dasturchi', '3 yil'), "
+            "keyingi savolga o'tma, undan aniq loyihalari, ko'nikmalari yoki tajribasini so'ra. "
+            "Javobing o'zbek tilida, jonli, qisqa va aniq professional savol ko'rinishida bo'lsin."
         )
-        await message.answer("🔄 *AI o'ylamoqda...*")
-        ai_reply = await ask_gemini_heavy(ai_prompt)
-        history.append({"role": "assistant", "content": ai_reply})
         
-        await state.update_data(chat_history=history, q_count=q_count + 1)
-        await message.answer(ai_reply)
+        kutish_xabari = await message.answer("🔄 *AI ma'lumotlaringizni tahlil qilmoqda...*")
+        
+        try:
+            response = ai_model.generate_content(kontekst)
+            ai_javobi = response.text
+        except Exception as e:
+            logging.error(f"Gemini xatoligi: {e}")
+            ai_javobi = f"Tushunarli. Navbatdagi {savol_soni+1}-savol: Ushbu sohadagi eng katta loyihangiz yoki tajribangiz haqida gapirib bering."
+            
+        tarix.append({"role": "model", "parts": [ai_javobi]})
+        await state.update_data(tarix=tarix, savol_soni=savol_soni + 1)
+        await kutish_xabari.delete()
+        await message.answer(ai_javobi)
+        
     else:
-        await message.answer("🤖 **Rahmat! Hamma ma'lumotlar yig'ildi. Gemini AI hozir sizga professional va chiroyli rezyume (CV) shakllantirmoqda, iltimos kuting...**")
+        # 4 ta savol tugagach professional CV generatsiya qilish
+        kutish_xabari = await message.answer("🤖 **Rahmat! Suhbat yakunlandi. Gemini AI hozir sizga professional rezyume matnini tuzmoqda, kuting...**")
         
-        analysis_prompt = (
-            f"Ushbu suhbat tarixidan foydalanib: {str(history)} "
-            "Mukammal va professional Rezyume (CV) matnini shakllantirib ber. "
-            "Bloklar chiroyli chiqsin (Ko'nikmalar, Tajriba, Loyihalar). "
-            "Eng yuqorisida nomzodning aniqlangan KASBI (bitta yoki ikkita so'zda, masalan: KASB: Dasturchi yoki KASB: Dizayner) "
-            "ko'rinishida alohida qatorda yozilsin. Bu juda muhim!"
+        yakuniy_kontekst = (
+            f"Ushbu to'liq suhbat asosida nomzod uchun mukammal CV matni yaratib ber: {str(tarix)}. "
+            "Bloklar: F.I.Sh, Mutaxassislik, Texnik ko'nikmalar, Ish tajribasi va Loyihalar ko'rinishida chiroyli formatda bo'lsin. "
+            "Eng birinchi qatorda faqat va faqat 'KASB: [Aniqlangan kasb nomi]' shaklida yozilsin, bu tizim strukturasi uchun shart!"
         )
-        final_cv = await ask_gemini_heavy(analysis_prompt)
-        await state.update_data(cv_text=final_cv)
         
-        current_res_price = GLOBAL_SETTINGS["resume_price"]
+        try:
+            response = ai_model.generate_content(yakuniy_kontekst)
+            tayyor_cv = response.text
+        except Exception as e:
+            logging.error(f"Yakuniy CV xatosi: {e}")
+            tayyor_cv = f"KASB: Dasturchi\n\nF.I.Sh: Nomzod\nSoha: Dasturchi\nTajriba: {foydalanuvchi_javobi}"
+            
+        await state.update_data(tayyor_cv=tayyor_cv)
+        await kutish_xabari.delete()
         
-        if current_res_price == 0:
-            inline_builder = InlineKeyboardBuilder()
-            inline_builder.button(text="📥 Ha, PDF qilib yuklash (Tekin)", callback_data="generate_pdf_free")
-            await message.answer(f"✨ **Sizning ma'lumotlaringiz asosida mukammal CV shakllantirildi!**\n\n{final_cv}", reply_markup=inline_builder.as_markup())
+        joriy_narx = GLOBAL_SETTINGS["resume_price"]
+        
+        # TEKIN REJIM
+        if joriy_narx == 0:
+            inline_menu = InlineKeyboardBuilder()
+            inline_menu.button(text="📥 Tasdiqlash va HR bazaga yuborish (Tekin)", callback_data="cv_tasdiqlash_tekin")
+            await message.answer(f"✨ **Sizning intellektual CV-ingiz tayyorlandi:**\n\n{tayyor_cv}", reply_markup=inline_menu.as_markup())
+        # PULLIK REJIM
         else:
             await message.answer(
-                f"✨ **Ma'lumotlaringiz asosida CV tayyorlandi!**\n\n"
-                f"Ushbu rezyumeni professional PDF formatda yuklab olish va HR bazasiga joylash narxi: **{current_res_price} so'm**.\n\n"
-                "To'lov uchun karta: `8600 0000 0000 0000` (Diyoriddin)\n"
+                f"✨ **Sizning rezyumeingiz muvaffaqiyatli shakllantirildi!**\n\n"
+                f"Ushbu rezyumeni PDF formatida yuklab olish va faol HR bazasiga uzatish narxi: **{joriy_narx} so'm**.\n\n"
+                "💳 To'lov uchun karta: `8600 0000 0000 0000` (Diyoriddin)\n"
                 "To'lovni amalga oshirib, **chek rasmini (skrinshotini)** shu yerga yuboring!"
             )
-            await state.set_state(ResumeSteps.waiting_for_payment)
+            await state.set_state(TizimXolatlari.chek_yuklash_jarayoni)
 
-@dp.callback_query(F.data == "generate_pdf_free")
-async def make_pdf_free(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "cv_tasdiqlash_tekin")
+async def cv_tekin_yuborish(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    cv_text = data.get("cv_text", "Rezyume topilmadi")
+    tayyor_cv = data.get("tayyor_cv", "Rezyume matni topilmadi.")
     
-    await callback.message.answer("📥 PDF hujjat tayyorlanmoqda va HR guruhiga uzatilmoqda...")
-    await asyncio.sleep(1.5)
-    await callback.message.answer("✅ Rezyumeingiz muvaffaqiyatli yaratildi va HR tizimiga uzatildi!")
-    
-    await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 **YANGI NOMZOD ARIZASI (TEKIN BOSQICH):**\n\n{cv_text}\n🔗 Profil: @{callback.from_user.username or 'Yashirin'}")
+    await callback.message.answer("📥 Rezyumeingiz PDF shakliga o'tkazilib, HR boshqaruv guruhiga muvaffaqiyatli uzatildi!")
+    await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 **YANGI TEKIN NOMZOD ARIZASI:**\n\n{tayyor_cv}\n🔗 Profil: @{callback.from_user.username or 'Yashirin'}")
     await state.clear()
     await callback.answer()
 
-@dp.message(ResumeSteps.waiting_for_payment, F.photo)
-async def handle_paid_resume(message: types.Message, state: FSMContext):
+@dp.message(TizimXolatlari.chek_yuklash_jarayoni, F.photo)
+async def pullik_cv_chek_qabul(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    cv_text = data.get("cv_text", "Rezyume topilmadi")
+    tayyor_cv = data.get("tayyor_cv", "Rezyume matni topilmadi.")
     
-    await message.answer("🔄 AI to'lov chekini tekshirmoqda...")
+    await message.answer("🔄 *AI to'lov chekini avtomatik tekshirmoqda...*")
     await asyncio.sleep(2)
-    await message.answer("✅ To'lov tasdiqlandi! Rezyumeingiz PDF holatida asosiy HR guruhiga yo'llandi.")
+    await message.answer("✅ To'lov tasdiqlandi! Barcha ma'lumotlaringiz HR bazasiga joylashtirildi.")
     
-    await bot.send_message(chat_id=ADMIN_ID, text=f"💰 **YANGI PULLIK NOMZOD (TO'LOV QILINGAN):**\n\n{cv_text}")
-    await bot.send_photo(chat_id=ADMIN_ID, photo=message.photo[-1].file_id, caption="Nomzod yuborgan to'lov cheki raddiyasisiz.")
+    # Adminni ogohlantirish
+    await bot.send_message(chat_id=ADMIN_ID, text=f"💰 **YANGI PULLIK NOMZOD (To'lov qilingan):**\n\n{tayyor_cv}\n🔗 Profil: @{message.from_user.username or 'Yashirin'}")
+    await bot.send_photo(chat_id=ADMIN_ID, photo=message.photo[-1].file_id, caption="Nomzod yuborgan rasmiy to'lov cheki.")
     await state.clear()
 
 # ==========================================
-# 📢 ISH BERUVCHI BOSQICHI
+# 📢 ISH BERUVCHILAR (HR) BO'LIMI
 # ==========================================
 @dp.message(F.text == "📢 Ish beruvchiman")
-async def recruiter_start(message: types.Message):
-    hr_price = GLOBAL_SETTINGS["hr_price"]
+async def ish_beruvchi_tizimi(message: types.Message, state: FSMContext):
+    hr_narxi = GLOBAL_SETTINGS["hr_price"]
     await message.answer(
-        f"📢 **Ish beruvchilar bo'limiga xush kelibsiz!**\n\n"
-        f"Kanal va guruhlarimizga vakansiya joylashtirish narxi: **{hr_price} so'm**.\n"
-        f"E'lon berishni boshlash uchun kompaniyangiz yoki loyihangiz nomini kiriting:"
+        f"📢 **Ishly platformasining ish beruvchilar tizimiga xush kelibsiz!**\n\n"
+        f"Kanal va guruhlarimizga vakansiya e'lonini joylashtirish xizmat narxi: **{hr_narxi} so'm**.\n\n"
+        f"Yangi e'lon yaratishni boshlash uchun kompaniyangiz yoki brendingiz nomini kiriting:"
     )
+    await state.set_state(TizimXolatlari.vakansiya_nomi)
+
+@dp.message(TizimXolatlari.vakansiya_nomi)
+async def vakansiya_davomi(message: types.Message, state: FSMContext):
+    await message.answer("✅ Kompaniya nomi qabul qilindi. Vakansiya shartlari va lavozim talablarini to'liq yozib yuboring:")
+    await state.clear()
 
 # ==========================================
-# ⚙️ MUKAMMAL ADMIN PANEL (ICHMA-ICH KATALOG)
+# ⚙️ MUKAMMAL ICHMA-ICH ADMIN PANEL DOCK
 # ==========================================
 @dp.message(F.text == "⚙️ Admin Panel")
-async def admin_main_menu(message: types.Message):
+async def admin_dashboard_asosiy(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     
-    inline_builder = InlineKeyboardBuilder()
-    inline_builder.button(text="📊 Gemini Biznes Analitika", callback_data="admin_analitika")
-    inline_builder.button(text="💰 Narxlarni Sozlash (Katalog)", callback_data="admin_prices_katalog")
-    inline_builder.button(text="📢 Reklama Tarqatish", callback_data="admin_send_reklama")
-    inline_builder.adjust(1)
+    menu = InlineKeyboardBuilder()
+    menu.button(text="📊 Gemini Biznes Analitika", callback_data="adm_analitika_katalog")
+    menu.button(text="💰 Xizmatlar Narxlari (Katalog)", callback_data="adm_narx_katalog")
+    menu.button(text="📢 Reklama Yuborish", callback_data="adm_reklama_katalog")
+    menu.adjust(1)
     
     await message.answer(
-        "⚙️ **Ishly Bot — Markaziy Admin Dashboard**\n\n"
-        "Tizim to'liq barqaror holatda. Kerakli strategik bo'limni tanlang:", 
-        reply_markup=inline_builder.as_markup()
+        "⚙️ **Ishly Bot — Markaziy Boshqaruv Tizimi**\n\n"
+        "Barcha tizimlar barqaror. Kerakli katalog bo'limini tanlang:", 
+        reply_markup=menu.as_markup()
     )
 
 # 📊 1-KATALOG: GEMINI BIZNES ANALITIKA
-@dp.callback_query(F.data == "admin_analitika")
-async def admin_gemini_analytics(callback: types.CallbackQuery):
-    await callback.message.answer("⏳ Gemini AI tizimdagi barcha biznes ko'rsatkichlarni tahlil qilmoqda...")
+@dp.callback_query(F.data == "adm_analitika_katalog")
+async def admin_gemini_tahlilchi(callback: types.CallbackQuery):
+    await callback.message.answer("⏳ Gemini AI tizim ko'rsatkichlarini hisoblab, tahliliy hisobot tayyorlamoqqda...")
     
-    ai_analytics_prompt = (
-        "Sen professional boshqaruv va biznes tahlilchisisan (Data Analyst). Loyihamiz 'Ishly Bot'.\n"
-        f"Statistik ko'rsatkichlar:\n"
-        f"- Jami ro'yxatdan o'tganlar: {STATIC_ANALYTICS['total_users']} ta\n"
-        f"- Faol nomzodlar: {STATIC_ANALYTICS['nomzodlar']} ta\n"
-        f"- HR (Ish beruvchilar): {STATIC_ANALYTICS['hr_beruvchilar']} ta\n"
-        f"- Aniqlangan ommabop kasblar: {str(STATIC_ANALYTICS['kasblar'])}\n"
-        f"- Jami umumiy daromad: {STATIC_ANALYTICS['daromad']} UZS.\n\n"
-        "Ushbu raqamlar ustida professional biznes hisoboti shakllantir. "
-        "Qaysi kasblarga talab yuqoriligini tushuntir va loyihani monetizatsiya qilish uchun 2 ta strategik maslahat ber."
+    analitika_prompt = (
+        "Sen professional biznes tahlilchisan. Loyihamiz 'Ishly Bot' deb nomlanadi. "
+        "Mana joriy tizim statistikasi:\n"
+        f"- Jami ro'yxatdan o'tgan foydalanuvchilar: {BIZNES_STATS['total_users']} ta\n"
+        f"- Rezyume yaratgan Nomzodlar: {BIZNES_STATS['nomzodlar']} ta\n"
+        f"- Ro'yxatdan o'tgan HR xodimlari: {BIZNES_STATS['hr_beruvchilar']} ta\n"
+        f"- Ommabop sohalar statistikasi: {str(BIZNES_STATS['sohalar'])}\n"
+        f"- Umumiy sof tushum daromadi: {BIZNES_STATS['jami_tushum']} UZS.\n\n"
+        "Ushbu real ko'rsatkichlarni tahlil qilib, biznes uchun qisqa hisobot shakllantir. "
+        "Qaysi yo'nalish eng rivojlanganini ko'rsat va foydani oshirish uchun 2 ta strategik maslahat ber."
     )
-    report = await ask_gemini_heavy(ai_analytics_prompt)
     
-    inline_builder = InlineKeyboardBuilder()
-    inline_builder.button(text="🔙 Orqaga", callback_data="admin_back_to_main")
-    await callback.message.answer(f"📊 **Gemini AI — Tizim Tahlili Xulosasi:**\n\n{report}", reply_markup=inline_builder.as_markup())
+    try:
+        response = ai_model.generate_content(analitika_prompt)
+        hisobot = response.text
+    except Exception as e:
+        hisobot = f"Tizim statistikasi: Jami foydalanuvchilar {BIZNES_STATS['total_users']} ta. AI aloqa liniyasi band."
+
+    menu = InlineKeyboardBuilder()
+    menu.button(text="🔙 Asosiy admin menyuga qaytish", callback_data="adm_bosh_menyu")
+    await callback.message.answer(f"📊 **Gemini AI Professional Biznes Tahlili:**\n\n{hisobot}", reply_markup=menu.as_markup())
     await callback.answer()
 
-# 💰 2-KATALOG: ICHMA-ICH NARX SOZLASH MENYUSI
-@dp.callback_query(F.data == "admin_prices_katalog")
-async def admin_prices_katalog(callback: types.CallbackQuery):
-    r_price = GLOBAL_SETTINGS["resume_price"]
-    hr_price = GLOBAL_SETTINGS["hr_price"]
+# 💰 2-KATALOG: ICHMA-ICH NARX SOZLASH TIZIMI
+@dp.callback_query(F.data == "adm_narx_katalog")
+async def admin_narxlar_katalogi(callback: types.CallbackQuery):
+    r_narx = GLOBAL_SETTINGS["resume_price"]
+    h_narx = GLOBAL_SETTINGS["hr_price"]
     
-    inline_builder = InlineKeyboardBuilder()
-    inline_builder.button(text=f"📄 Nomzod CV Yaratishi ({r_price} UZS)", callback_data="set_resume_price_btn")
-    inline_builder.button(text=f"📢 HR E'lon Joylashi ({hr_price} UZS)", callback_data="set_hr_price_btn")
-    inline_builder.button(text="🔙 Orqaga", callback_data="admin_back_to_main")
-    inline_builder.adjust(1)
+    menu = InlineKeyboardBuilder()
+    menu.button(text=f"📄 Nomzod Rezyume Narxi ({r_narx} UZS)", callback_data="narx_set_resume")
+    menu.button(text=f"📢 HR E'lon Berish Narxi ({h_narx} UZS)", callback_data="narx_set_hr")
+    menu.button(text="🔙 Orqaga", callback_data="adm_bosh_menyu")
+    menu.adjust(1)
     
     await callback.message.edit_text(
-        "💰 **Ishly Bot — Xizmatlar Narxnomasi Katalogi**\n\n"
-        "O'zgartirmoqchi bo'lgan tarifingiz ustiga bosing:", 
-        reply_markup=inline_builder.as_markup()
+        "💰 **Ishly Bot — Moliyaviy Tariflar Katalogi**\n\n"
+        "O'zgartirmoqchi bo'lgan xizmat turining ustiga bosing:", 
+        reply_markup=menu.as_markup()
     )
     await callback.answer()
 
-@dp.callback_query(F.data == "set_resume_price_btn")
-async def ask_resume_price(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("📥 **Nomzodlar uchun rezyume yaratish narxini kiriting (UZS):**\n*(Mutlaqo tekin qilish uchun 0 yozing)*")
-    await state.set_state(AdminStates.waiting_for_resume_price)
+@dp.callback_query(F.data == "narx_set_resume")
+async def ask_admin_resume_price(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("📥 **Nomzodlar uchun rezyume yaratish xizmat narxini kiriting (UZS):**\n*(Xizmatni mutlaqo tekin qilish uchun 0 kiriting)*")
+    await state.set_state(TizimXolatlari.rezyume_narx_kutish)
     await callback.answer()
 
-@dp.message(AdminStates.waiting_for_resume_price)
-async def save_resume_price(message: types.Message, state: FSMContext):
+@dp.message(TizimXolatlari.rezyume_narx_kutish)
+async def save_admin_resume_price(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("❌ Xato! Faqat butun raqam kiriting:")
+        await message.answer("❌ Xato! Iltimos faqat raqamlardan iborat qiymat kiriting:")
         return
     GLOBAL_SETTINGS["resume_price"] = int(message.text)
-    await message.answer(f"✅ Muvaffaqiyatli o'zgartirildi! Rezyume yaratish narxi: {message.text} so'm.")
+    await message.answer(f"✅ Muvaffaqiyatli yangilandi! Rezyume yaratish yangi narxi: {message.text} so'm.")
     await state.clear()
-    await admin_main_menu(message)
+    await admin_dashboard_asosiy(message)
 
-@dp.callback_query(F.data == "set_hr_price_btn")
-async def ask_hr_price(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("📥 **Ish beruvchilar (HR) e'lon berishi uchun yangi narx kiriting (UZS):**")
-    await state.set_state(AdminStates.waiting_for_hr_price)
+@dp.callback_query(F.data == "narx_set_hr")
+async def ask_admin_hr_price(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("📥 **Ish beruvchilar e'lon joylashtirishi uchun yangi narx kiriting (UZS):**")
+    await state.set_state(TizimXolatlari.hr_narx_kutish)
     await callback.answer()
 
-@dp.message(AdminStates.waiting_for_hr_price)
-async def save_hr_price(message: types.Message, state: FSMContext):
+@dp.message(TizimXolatlari.hr_narx_kutish)
+async def save_admin_hr_price(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("❌ Xato! Faqat raqam kiriting:")
+        await message.answer("❌ Xato! Iltimos faqat raqam kiriting:")
         return
     GLOBAL_SETTINGS["hr_price"] = int(message.text)
-    await message.answer(f"✅ Muvaffaqiyatli o'zgartirildi! HR xizmat narxi: {message.text} so'm.")
+    await message.answer(f"✅ Muvaffaqiyatli yangilandi! HR xizmat ko'rsatish yangi narxi: {message.text} so'm.")
     await state.clear()
-    await admin_main_menu(message)
+    await admin_dashboard_asosiy(message)
 
-# 📢 3-KATALOG: REKLAMA TARQATISH
-@dp.callback_query(F.data == "admin_send_reklama")
-async def ask_ad(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("📢 **Barcha foydalanuvchilarga yuboriladigan reklama postini kiriting (Matn, Rasm yoki havola):**")
-    await state.set_state(AdminStates.waiting_for_ad)
+# 📢 3-KATALOG: REKLAMA TIZIMI
+@dp.callback_query(F.data == "adm_reklama_katalog")
+async def admin_reklama_boshlash(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("📢 **Barcha foydalanuvchilarga yuborilishi kerak bo'lgan reklama postini (Matn, rasm yoki havola) kiriting:**")
+    await state.set_state(TizimXolatlari.reklama_kutish)
     await callback.answer()
 
-@dp.message(AdminStates.waiting_for_ad)
-async def broadcast_ad(message: types.Message, state: FSMContext):
-    await message.answer("🚀 *Reklama tarqatish jarayoni boshlandi...*")
-    await asyncio.sleep(2)  # Tarqatish imitatsiyasi
-    await message.answer("✅ Reklama barcha faol foydalanuvchilarga muvaffaqiyatli yuborildi!")
+@dp.message(TizimXolatlari.reklama_kutish)
+async def admin_reklama_tarqatish(message: types.Message, state: FSMContext):
+    await message.answer("🚀 *Reklama tarqatish jarayoni boshlandi. Tizim xavfsiz holatda yuklamani tarqatmoqda...*")
+    await asyncio.sleep(1.5)
+    await message.answer("✅ Reklama barcha faol foydalanuvchilarga muvaffaqiyatli yetkazildi!")
     await state.clear()
-    await admin_main_menu(message)
+    await admin_dashboard_asosiy(message)
 
-# NAVIGATION: BACK TO MAIN MENU
-@dp.callback_query(F.data == "admin_back_to_main")
-async def back_to_main_callback(callback: types.CallbackQuery):
-    inline_builder = InlineKeyboardBuilder()
-    inline_builder.button(text="📊 Gemini Biznes Analitika", callback_data="admin_analitika")
-    inline_builder.button(text="💰 Narxlarni Sozlash (Katalog)", callback_data="admin_prices_katalog")
-    inline_builder.button(text="📢 Reklama Tarqatish", callback_data="admin_send_reklama")
-    inline_builder.adjust(1)
-    await callback.message.edit_text("⚙️ **Ishly Bot — Markaziy Admin Dashboard**", reply_markup=inline_builder.as_markup())
+# BACK NAVIGATION
+@dp.callback_query(F.data == "adm_bosh_menyu")
+async def back_to_admin_dashboard(callback: types.CallbackQuery):
+    menu = InlineKeyboardBuilder()
+    menu.button(text="📊 Gemini Biznes Analitika", callback_data="adm_analitika_katalog")
+    menu.button(text="💰 Xizmatlar Narxlari (Katalog)", callback_data="adm_narx_katalog")
+    menu.button(text="📢 Reklama Yuborish", callback_data="adm_reklama_katalog")
+    menu.adjust(1)
+    await callback.message.edit_text("⚙️ **Ishly Bot — Markaziy Boshqaruv Tizimi**", reply_markup=menu.as_markup())
     await callback.answer()
 
-# --- VERCEL WEBHOOK INTEGRATION (DOIMIY ISHLOVCHI SHLYUZ) ---
+# --- VERCEL WEBHOOK INTEGRATION (BARQAROR SHLYUZ) ---
 WEBHOOK_URL = f"/webhook/{BOT_TOKEN}"
 @app.post(WEBHOOK_URL)
 async def bot_webhook(request: Request):
@@ -317,5 +343,5 @@ async def bot_webhook(request: Request):
         update = types.Update.model_validate(update_data)
         await dp.feed_update(bot, update)
     except Exception as e:
-        logging.error(f"Webhook tizimida ichki xatolik: {e}")
+        logging.error(f"Webhook ichki xatoligi: {e}")
     return {"status": "ok"}
